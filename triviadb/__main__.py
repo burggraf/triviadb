@@ -35,7 +35,7 @@ def parser():
     p.add_argument("--db", default="data/trivia.sqlite", help="Working SQLite database")
     p.add_argument("--env", default=".env")
     p.add_argument("--cache", default="data/cache", help="Downloaded source snapshots")
-    p.add_argument("--media-dir", default="data/media")
+    p.add_argument("--media-dir", default="data/media", help="Asset folder; stored media paths are filenames relative to this folder")
     p.add_argument("--max-media-mb", type=positive, default=2048, help="Total media-library cap in MiB (default 2 GiB)")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="Initialize the database")
@@ -90,6 +90,7 @@ def parser():
     export = sub.add_parser("export", help="Export approved questions, provenance, and required media")
     export.add_argument("path", type=Path)
     med = sub.add_parser("media", help="Optional image/audio questions").add_subparsers(dest="media_command", required=True)
+    med.add_parser("migrate", help="Migrate legacy media to shared question UUIDs and filename-only paths; safe to rerun")
     mm = med.add_parser("met", help="Attach explicitly Open Access Met images to unprocessed facts")
     mm.add_argument("--limit", type=positive, default=10)
     ml = med.add_parser("list")
@@ -129,7 +130,9 @@ def print_json(data):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
-def export_db(db, target):
+def export_db(db, target, media_dir="data/media"):
+    if db.execute("SELECT 1 FROM questions WHERE media_id IS NOT NULL AND media_id<>id").fetchone():
+        raise ValueError("Legacy media identity; run `media migrate` before exporting")
     target = Path(target).resolve()
     assets_target = target.parent / (target.stem + ".media")
     if target.exists() or assets_target.exists():
@@ -152,15 +155,15 @@ def export_db(db, target):
                     for row in db.execute(sql):
                         row = dict(row)
                         if table == "media":
-                            original = Path(row["path"])
+                            original = media.media_path(row, media_dir)
                             with original.open("rb") as file:
                                 if hashlib.file_digest(file, "sha256").hexdigest() != row["sha256"]:
                                     raise ValueError("Required export media is missing or has changed")
-                            relative = Path(assets_target.name) / (row["sha256"] + original.suffix)
+                            relative = Path(assets_target.name) / original.name
                             asset = temp / relative
                             asset.parent.mkdir(exist_ok=True)
                             shutil.copyfile(original, asset)
-                            row["path"] = str(relative)
+                            row["path"] = original.name
                         output.execute(f"INSERT INTO {table} VALUES ({','.join('?' for _ in row)})", tuple(row.values()))
             if output.execute("PRAGMA foreign_key_check").fetchall() or output.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError("Export failed SQLite integrity checks")
@@ -294,9 +297,9 @@ def execute(db, args):
         writer = args.writer_model or config.get("GEMINI_WRITER_MODEL", WRITER_MODEL)
         reviewer = args.reviewer_model or config.get("GEMINI_REVIEWER_MODEL", REVIEW_MODEL)
         if args.command == "generate":
-            generate(db, client, args.limit, args.batch_size, writer, reviewer, args.draft_only, args.category, args.type)
+            generate(db, client, args.limit, args.batch_size, writer, reviewer, args.draft_only, args.category, args.type, args.media_dir)
         else:
-            review_pending(db, client, args.limit, args.batch_size, reviewer, args.category, args.type)
+            review_pending(db, client, args.limit, args.batch_size, reviewer, args.category, args.type, args.media_dir)
         print(f"API attempts this run: {client.calls}; approved total: {db.execute('SELECT count(*) FROM questions').fetchone()[0]}")
     elif args.command == "stats":
         stats(db, args)
@@ -316,10 +319,12 @@ def execute(db, args):
     elif args.command == "reject":
         reject_question(db, args.id, args.reason)
     elif args.command == "export":
-        export_db(db, args.path)
+        export_db(db, args.path, args.media_dir)
     elif args.command == "media":
         cap = args.max_media_mb * 1024**2
-        if args.media_command == "met":
+        if args.media_command == "migrate":
+            media.migrate(db, args.media_dir)
+        elif args.media_command == "met":
             media.import_met_media(db, http, args.media_dir, args.limit, cap)
         elif args.media_command == "list":
             print_json([dict(r) for r in db.execute("SELECT * FROM media ORDER BY created_at DESC LIMIT ?", (args.limit,))])

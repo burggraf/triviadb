@@ -47,6 +47,8 @@ python3 -m triviadb --db /path/to/trivia.sqlite --media-dir /path/to/assets stat
 
 MusicBrainz, Smithsonian, GeoNames, and other adapters are **not implemented yet**. No Jeopardy clues, scraped quiz wording, Wikipedia prose, or noncommercial/share-alike question banks are imported. The software's license checks are not legal advice or a guarantee of rights in manually supplied assets.
 
+For existing content, remove items for rights reasons only when affirmative evidence establishes that the intended use is not permitted. Unclear evidence is a review flag, not proof of infringement and not grounds for automatic deletion. Original factual questions about copyrighted books, films, or songs are not the same as reproducing those works. The previously selected CC0/public-domain **import policy** remains; other licenses may grant rights too, but are outside the current source allowlist.
+
 ### Grow the fact pool
 
 ```sh
@@ -144,7 +146,7 @@ python3 -m triviadb media import /path/to/recording.wav \
   --start 0 --seconds 10 --fact-id FACT_FINGERPRINT
 
 # Or attach an already-imported asset to an unprocessed fact:
-python3 -m triviadb media attach --fact-id FACT_FINGERPRINT --media-id MEDIA_UUID
+python3 -m triviadb media attach --fact-id FACT_FINGERPRINT --media-id RESERVED_QUESTION_UUID
 python3 -m triviadb generate --type sound --limit 5 --max-calls 10
 ```
 
@@ -155,8 +157,24 @@ Use real source/license URLs in place of the examples. The fact must already exi
 - Allowed policy: CC0/public domain only. CC BY/NC/SA assets are not currently accepted.
 - Photos become metadata-stripped JPEGs with maximum dimensions of 1600×1600.
 - Sound becomes metadata-stripped mono 44.1 kHz, 16-bit WAV, maximum 30 seconds. Choose a clip within the source duration.
-- Filenames are content hashes, never artwork/artist/answer names. On-image text or spoken answers still need review.
+- Filenames are `<question-uuid>.jpg` or `<question-uuid>.wav`, never artwork/artist/answer names. The UUID is reserved at import, before approval, and is shared by the eventual question and its media row. SHA-256 remains a separate checksum/deduplication field. On-image text or spoken answers still need review.
 - License records, creator, source, evidence, transformations, and attribution are preserved separately.
+
+### Shared IDs and portable files
+
+Each question has at most **one photo or one sound clip**. A media record belongs to one question, not several. For approved media questions, `questions.id = questions.media_id = media.id`; the nullable `media_id` column/CLI flag remains as a compatibility foreign-key link, not a second identity. Reimporting identical media returns its existing reserved UUID rather than creating another copy; an already-attached asset cannot be reassigned to another fact.
+
+`media.path` stores **only the filename**. All building, review, and export operations resolve it against `--media-dir` (default `data/media`). If you move the folder, pass its new location; no database path edits are needed. Exported files live in `<export-stem>.media`, but the exported rows also store filenames only.
+
+To upgrade existing hash filenames/absolute paths, stop other writers and back up each database and its asset folder first. Use SQLite's backup API or `.backup` command for a live database, rather than copying just its `.sqlite` file.
+
+```sh
+python3 -m triviadb media migrate
+# An existing export has a different asset directory:
+python3 -m triviadb --db data/party.sqlite --media-dir data/party.media media migrate
+```
+
+Migration preserves published question IDs and uses them for their media records/files; unpublished assets retain their reserved UUIDs. It verifies the entire library before changing anything, refuses checksum mismatches/collisions/shared assets, updates active references transactionally, then removes verified old hash aliases. Rerunning is safe after interruption, including after commit but before alias cleanup. The migration uses same-directory hard links, requiring a hard-link-capable filesystem; the resulting files are ordinary JPEG/WAV files. Historical model responses are retained unchanged. The migration command does not make backups automatically.
 
 ### Laptop storage and S3
 
@@ -169,7 +187,7 @@ python3 -m triviadb --media-dir /Volumes/External/trivia-media media met --limit
 
 Images often take tens to hundreds of KB; a 10-second WAV is approximately **0.88 MB**. `stats` reports actual media/cache bytes and free disk space. The initial source snapshot download is roughly 350 MB. Keep an eye on export copies and do not download a full Wikidata dump onto a nearly full laptop.
 
-S3 is not required and no uploader is implemented. Exported assets use relative paths and question IDs reference stable media UUIDs. Your game can later serve the exported media folder from S3/CDN without changing question IDs. Building/reviewing media currently requires local files; no S3 credentials are needed.
+S3 is not required and no uploader is implemented. Exported assets use the question UUID as their filename, and `media.path` contains only that filename. Your game can later serve the exported media folder from S3/CDN without changing question IDs. Building/reviewing media currently requires local files; no S3 credentials are needed.
 
 ## Gemini keys, quotas, and restarts
 
@@ -207,7 +225,7 @@ A partial download is never treated as complete; incomplete downloads restart ra
 
 | Field | Meaning |
 |---|---|
-| `id` | Generated UUIDv4 |
+| `id` | UUIDv4; reserved at media import for photo/sound, otherwise generated at approval |
 | `category`, `subcategory` | Defined major category and reusable topic |
 | `question` | Standalone clue/question |
 | `a` | Correct answer |
@@ -215,7 +233,7 @@ A partial download is never treated as complete; incomplete downloads restart ra
 | `difficulty` | Editorial integer estimate, 1–9 |
 | `notes` | Optional supported post-answer fact/aside |
 | `type` | `text`, `photo`, or `sound` |
-| `media_id` | NULL for text; required linked asset for photo/sound |
+| `media_id` | NULL for text; equals `id` for photo/sound (compatibility foreign-key link) |
 
 Supporting tables include `facts`, `provenance`, `candidates`, `question_meta`, `media`, `fact_media`, `checkpoints`, `jobs`, and hashed `key_state`/`api_attempts`.
 
@@ -227,7 +245,7 @@ Exports approved questions, associated facts/provenance, and required media to *
 
 Game integration:
 - **Shuffle `a`–`d` for every play** while retaining which choice is correct. Never always display `a` first.
-- A photo/sound question requires its asset. Resolve exported media paths relative to the exported SQLite file.
+- A photo/sound question requires its asset. Resolve its filename inside `<export-stem>.media/` beside the exported SQLite file, or your configured media base URL.
 - Source URLs, attribution, creator, filenames from the original source, and notes can reveal answers: display them after answering, not as pre-answer captions.
 - Use accessible image labels/audio controls; provide text-only rounds where visual/audio questions would exclude players.
 
@@ -240,6 +258,7 @@ The saved pilot contains **717 deduplicated source facts** and **16 retained que
 - Working SQLite: about 1.41 MiB; source cache: about 390 MiB; six stored photos: about 474 KiB combined. Only the retained photo is copied into the export.
 - Text/photo Gemini calls ran successfully. Audio conversion/attachment/export was tested offline with a synthetic WAV, not a live licensed-audio corpus.
 - Wikidata rate-limited the broader discovery run; completed recipes/facts were preserved. More discovery can resume later, prioritizing untouched recipes.
+- The existing working/export libraries were migrated to shared UUID filenames with backups under `data/backups/`. All 16 question IDs and all media checksums were preserved. `data/rights-review.json` records the license evidence audit: all six distinct images have matching Met public-domain API evidence; no confirmed rights problems were found, so no content was removed for rights reasons.
 
 ## Tests
 
@@ -247,4 +266,4 @@ The saved pilot contains **717 deduplicated source facts** and **16 retained que
 python3 -m unittest discover -s tests -v
 ```
 
-Offline tests use temporary SQLite databases and fake HTTP transports, never your keys. They cover identity/conflicts, strict reviews, resume/rollback, source ambiguity, distinct distractors, pagination past ineligible facts, quota persistence, malformed response retries, media rights/clipping/caps, export integrity/assets, manual rejection, and balanced seeded sampling. The audio-processing test skips if ffmpeg/ffprobe are unavailable.
+Offline tests use temporary SQLite databases and fake HTTP transports, never your keys. They cover identity/conflicts, strict reviews, resume/rollback, source ambiguity, distinct distractors, pagination past ineligible facts, quota persistence, malformed response retries, media rights/clipping/caps, shared IDs, filename/path validation, migration collisions/rollback/restart, relocating and re-exporting a library, manual rejection, and balanced seeded sampling. The audio-processing test skips if ffmpeg/ffprobe are unavailable.

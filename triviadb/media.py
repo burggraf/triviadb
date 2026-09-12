@@ -3,6 +3,8 @@
 import hashlib
 import json
 import math
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -10,7 +12,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .store import checkpoint, dumps
+from .store import checkpoint, dumps, media_filename, media_path, normalize
 
 MET_LICENSE = "https://www.metmuseum.org/about-the-met/policies-and-documents/open-access"
 
@@ -72,14 +74,15 @@ def import_asset(db, source, directory, *, kind, license_id, rights_confirmed, s
         used = db.execute("SELECT coalesce(sum(bytes),0) FROM media").fetchone()[0]
         if used + len(raw) > max_bytes:
             raise ValueError("Media storage cap reached; raise --max-media-mb or move storage")
-        target = directory / (sha + suffix)
-        output.replace(target)
-        mid = str(uuid.uuid4())
+        mid = str(uuid.uuid4())  # Reserved now; approval uses this same UUID for the question.
+        filename = media_filename(mid, kind)
+        target = directory / filename
+        os.link(output, target)  # Never overwrite an existing file.
         with db:
             db.execute("""INSERT INTO media
                 (id,kind,path,sha256,bytes,mime_type,source_url,creator,license,license_url,evidence,
                  attribution,alt_text,start_seconds,duration_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                       (mid, kind, str(target), sha, len(raw), mime, source_url, creator, license_id, license_url,
+                       (mid, kind, filename, sha, len(raw), mime, source_url, creator, license_id, license_url,
                         evidence, f"{creator}; {license_id}; {source_url}. Resized/converted or excerpted; no endorsement implied.",
                         "Artwork for this question." if kind == "photo" else "Listen to the audio clip for this question.",
                         start if kind == "sound" else None, seconds if kind == "sound" else None))
@@ -93,8 +96,73 @@ def attach(db, fact_id, media_id):
         raise ValueError("Fact does not exist or is quarantined")
     if not db.execute("SELECT 1 FROM media WHERE id=?", (media_id,)).fetchone():
         raise ValueError("Media does not exist")
+    if db.execute("SELECT 1 FROM fact_media WHERE media_id=? AND fact_id<>?", (media_id, fact_id)).fetchone():
+        raise ValueError("A media record belongs to one question; it is already attached to another fact")
     with db:
         db.execute("INSERT INTO fact_media VALUES (?,?) ON CONFLICT(fact_id) DO UPDATE SET media_id=excluded.media_id", (fact_id, media_id))
+
+
+def migrate(db, directory):
+    """Normalize the old hash/absolute-path format, without changing published question IDs."""
+    directory = Path(directory).resolve()
+    if db.execute("PRAGMA foreign_key_check").fetchall():
+        raise ValueError("Repair existing foreign-key errors before migrating media")
+    for table in ("fact_media", "questions"):
+        if db.execute(f"SELECT media_id FROM {table} WHERE media_id IS NOT NULL GROUP BY media_id HAVING count(*)>1").fetchone():
+            raise ValueError("Shared media cannot be assigned one question UUID; resolve its multiple links first")
+    rows = db.execute("SELECT m.*,q.id AS question_id FROM media m LEFT JOIN questions q ON q.media_id=m.id").fetchall()
+    existing_ids = {row["id"] for row in rows}
+    moves = []
+    for row in rows:
+        identity = row["question_id"] or row["id"]
+        filename = media_filename(identity, row["kind"])
+        if identity != row["id"] and identity in existing_ids:
+            raise ValueError("Question UUID collides with another media record")
+        if not re.fullmatch(r"[0-9a-f]{64}", row["sha256"]):
+            raise ValueError("Invalid media checksum")
+        legacy_name = row["sha256"] + Path(filename).suffix
+        if Path(row["path"]).name not in (legacy_name, filename):
+            raise ValueError("Unrecognized legacy filename; expected a checksum or shared UUID filename")
+        target = media_path(dict(row, id=identity, path=filename), directory)
+        old = directory / legacy_name
+        if old.is_symlink():
+            raise ValueError("Media files must not be symlinks")
+        if not old.exists() and not target.exists():
+            raise ValueError(f"Missing media for {identity}; check --media-dir")
+        # Preflight the entire library, including existing destinations, before changing anything.
+        for path in (old, target):
+            if path.exists():
+                with path.open("rb") as source:
+                    sha = hashlib.file_digest(source, "sha256").hexdigest()
+                if sha != row["sha256"] or path.stat().st_size != row["bytes"]:
+                    raise ValueError(f"Media checksum/size mismatch: {path.name}; nothing overwritten")
+        moves.append((row, identity, target, old))
+    with db:
+        db.execute("PRAGMA defer_foreign_keys=ON")
+        for row, identity, target, old in moves:
+            if not target.exists():
+                os.link(old, target)  # Keep originals until commit; safe to retry after a failure.
+            db.execute("UPDATE media SET id=?,path=? WHERE id=?", (identity, target.name, row["id"]))
+            db.execute("UPDATE fact_media SET media_id=? WHERE media_id=?", (identity, row["id"]))
+            db.execute("UPDATE questions SET media_id=? WHERE media_id=?", (identity, row["id"]))
+            db.execute("""UPDATE candidates SET payload=json_set(payload,'$.media_id',?)
+                WHERE json_extract(payload,'$.media_id')=?""", (identity, row["id"]))
+            if row["question_id"]:
+                clue = db.execute("SELECT question FROM questions WHERE id=?", (identity,)).fetchone()[0]
+                db.execute("UPDATE question_meta SET question_norm=? WHERE question_id=?",
+                           (normalize(clue) + " | media:" + identity, identity))
+        if db.execute("PRAGMA foreign_key_check").fetchall():
+            raise ValueError("Media migration failed foreign-key validation")
+    removed = 0
+    for row, _, target, old in moves:
+        if old.exists():
+            with old.open("rb") as source:
+                if hashlib.file_digest(source, "sha256").hexdigest() != row["sha256"]:
+                    raise ValueError("An old media alias changed; retained it rather than deleting it")
+            old.unlink()
+            removed += 1
+    changed = sum(row["id"] != identity or row["path"] != target.name for row, identity, target, _ in moves)
+    print(f"Migrated {changed} media record(s); removed {removed} verified hash alias(es).")
 
 
 def import_met_media(db, http, directory, limit=10, max_bytes=2 * 1024**3):

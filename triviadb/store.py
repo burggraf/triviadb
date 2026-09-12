@@ -35,6 +35,26 @@ def entity_id(value):
     return "wd:" + match[1] if match else value
 
 
+def media_filename(identity, kind):
+    try:
+        parsed = uuid.UUID(identity)
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("Media requires a canonical UUIDv4") from None
+    if str(parsed) != identity or parsed.version != 4 or kind not in ("photo", "sound"):
+        raise ValueError("Invalid media UUID or type")
+    return identity + (".jpg" if kind == "photo" else ".wav")
+
+
+def media_path(asset, directory="data/media"):
+    filename = media_filename(asset["id"], asset["kind"])
+    if asset["path"] != filename:
+        raise ValueError("Legacy media path; run `media migrate` with the correct --media-dir")
+    path = Path(directory).resolve() / filename
+    if path.is_symlink():
+        raise ValueError("Media files must not be symlinks")
+    return path
+
+
 def canonical(value):
     if isinstance(value, dict):
         return {key: canonical(val) for key, val in sorted(value.items())}
@@ -225,7 +245,7 @@ def save_candidate(db, fid, q, model):
         VALUES (?,?,?,?,?)""", (fid, dumps(q), "rejected" if reason else "draft", reason, model))
 
 
-def apply_review(db, fid, review, model):
+def apply_review(db, fid, review, model, media_dir="data/media"):
     row = db.execute("SELECT * FROM candidates WHERE fact_id=?", (fid,)).fetchone()
     if not row or row["status"] != "draft":
         return
@@ -255,13 +275,15 @@ def apply_review(db, fid, review, model):
     if accept and q["media_id"]:
         media = db.execute("""SELECT media.* FROM media JOIN fact_media ON media.id=fact_media.media_id
             WHERE fact_media.fact_id=? AND media.id=?""", (fid, q["media_id"])).fetchone()
-        if not media or media["kind"] != q["type"] or not Path(media["path"]).is_file():
+        if not media or media["kind"] != q["type"] or not media_path(media, media_dir).is_file():
             raise ValueError("Required media is missing or mismatched; draft remains pending")
-        with Path(media["path"]).open("rb") as file:
+        if db.execute("SELECT count(*) FROM fact_media WHERE media_id=?", (media["id"],)).fetchone()[0] != 1:
+            raise ValueError("One media record can belong to only one question")
+        with media_path(media, media_dir).open("rb") as file:
             if hashlib.file_digest(file, "sha256").hexdigest() != media["sha256"]:
                 raise ValueError("Required media checksum mismatch; draft remains pending")
     if accept:
-        qid = str(uuid.uuid4())
+        qid = q["media_id"] or str(uuid.uuid4())
         db.execute("INSERT INTO questions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (qid, *(q[key] for key in FIELDS)))
         db.execute("INSERT INTO question_meta(question_id,fact_id,question_norm) VALUES (?,?,?)", (qid, fid, norm))
     db.execute("UPDATE candidates SET status=?,reason=?,reviewer_model=?,review=? WHERE fact_id=?",

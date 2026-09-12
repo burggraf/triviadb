@@ -4,7 +4,7 @@ import json
 
 from .catalog import CATEGORIES, RELATIONSHIPS
 from .sources import choose_options
-from .store import REVIEW_CHECKS, apply_review, dumps, save_candidate, unpack
+from .store import REVIEW_CHECKS, apply_review, dumps, media_path, save_candidate, unpack
 
 WRITER_MODEL = "gemini-3.5-flash-lite"
 REVIEW_MODEL = "gemini-3.5-flash"
@@ -63,10 +63,10 @@ def schema_for(ids, review=False):
             "required": ["items"], "additionalProperties": False}
 
 
-def media_for(db, fact_id):
+def media_for(db, fact_id, media_dir="data/media"):
     row = db.execute("""SELECT media.*,fact_media.fact_id FROM fact_media JOIN media ON media.id=fact_media.media_id
         WHERE fact_media.fact_id=?""", (fact_id,)).fetchone()
-    return dict(row) if row else None
+    return dict(row, path=str(media_path(row, media_dir))) if row else None
 
 
 def packet(fact, options, media):
@@ -75,7 +75,7 @@ def packet(fact, options, media):
                 context=fact["context"], qualifiers=fact["qualifiers"], type=media["kind"] if media else "text")
 
 
-def select_batch(db, size, seen, category=None, question_type=None):
+def select_batch(db, size, seen, category=None, question_type=None, media_dir="data/media"):
     counts = dict(db.execute("SELECT f.category,count(*) FROM candidates c JOIN facts f ON f.id=c.fact_id GROUP BY f.category"))
     categories = [category] if category else sorted(CATEGORIES, key=lambda cat: (counts.get(cat, 0), cat))
     def rows_for(cat):
@@ -101,7 +101,7 @@ def select_batch(db, size, seen, category=None, question_type=None):
                 options = choose_options(db, fact)
                 if not options:
                     continue
-                selected.append((fact, options, media_for(db, fact["id"])))
+                selected.append((fact, options, media_for(db, fact["id"], media_dir)))
                 break
             else:
                 pools.remove(pool)
@@ -110,7 +110,7 @@ def select_batch(db, size, seen, category=None, question_type=None):
     return selected
 
 
-def review_pending(db, client, limit=100, batch_size=6, model=REVIEW_MODEL, category=None, question_type=None):
+def review_pending(db, client, limit=100, batch_size=6, model=REVIEW_MODEL, category=None, question_type=None, media_dir="data/media"):
     reviewed = 0
     while reviewed < limit:
         rows = db.execute("""SELECT c.fact_id,c.payload FROM candidates c JOIN facts f ON f.id=c.fact_id
@@ -122,7 +122,7 @@ def review_pending(db, client, limit=100, batch_size=6, model=REVIEW_MODEL, cate
         packets, attachments = [], []
         for row in rows:
             fact = unpack(db.execute("SELECT * FROM facts WHERE id=?", (row["fact_id"],)).fetchone())
-            q, media = json.loads(row["payload"]), media_for(db, row["fact_id"])
+            q, media = json.loads(row["payload"]), media_for(db, row["fact_id"], media_dir)
             packets.append(dict(evidence=packet(fact, [q[k] for k in "abcd"], media), draft=q))
             if media:
                 attachments.append(media)
@@ -130,19 +130,19 @@ def review_pending(db, client, limit=100, batch_size=6, model=REVIEW_MODEL, cate
                                  schema_for([r["fact_id"] for r in rows], review=True), attachments=attachments)
         with db:
             for item in output["items"]:
-                apply_review(db, item["fact_id"], item, model)
+                apply_review(db, item["fact_id"], item, model, media_dir)
         reviewed += len(rows)
         print(f"Reviewed {reviewed} candidate(s)", flush=True)
     return reviewed
 
 
 def generate(db, client, limit=100, batch_size=6, writer_model=WRITER_MODEL, reviewer_model=REVIEW_MODEL,
-             draft_only=False, category=None, question_type=None):
+             draft_only=False, category=None, question_type=None, media_dir="data/media"):
     processed, seen = 0, set()
     if not draft_only:
-        processed = review_pending(db, client, limit, batch_size, reviewer_model, category, question_type)
+        processed = review_pending(db, client, limit, batch_size, reviewer_model, category, question_type, media_dir)
     while processed < limit:
-        selected = select_batch(db, min(batch_size, limit - processed), seen, category, question_type)
+        selected = select_batch(db, min(batch_size, limit - processed), seen, category, question_type, media_dir)
         if not selected:
             print("No more eligible facts with three distinct peer answers. Import more facts to expand the pools.", flush=True)
             break
@@ -163,5 +163,5 @@ def generate(db, client, limit=100, batch_size=6, writer_model=WRITER_MODEL, rev
         processed += len(selected)
         print(f"Draft stage: {processed}/{limit} candidate(s) processed", flush=True)
         if not draft_only:
-            review_pending(db, client, len(selected), batch_size, reviewer_model, category, question_type)
+            review_pending(db, client, len(selected), batch_size, reviewer_model, category, question_type, media_dir)
     return processed

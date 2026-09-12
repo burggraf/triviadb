@@ -268,8 +268,8 @@ class MediaTests(DatabaseTest):
         mid = import_asset(self.db, source, Path(self.temp.name) / "assets", **kw)
         self.assertEqual(mid, import_asset(self.db, source, Path(self.temp.name) / "assets", **kw))
         asset = dict(self.db.execute("SELECT * FROM media WHERE id=?", (mid,)).fetchone())
-        self.assertNotIn("director", Path(asset["path"]).name)
-        with wave.open(asset["path"], "rb") as audio:
+        self.assertEqual(asset["path"], mid + ".wav")
+        with wave.open(str(Path(self.temp.name) / "assets" / asset["path"]), "rb") as audio:
             self.assertAlmostEqual(audio.getnframes() / audio.getframerate(), 0.1, places=2)
         with self.assertRaises(ValueError):
             import_asset(self.db, source, Path(self.temp.name) / "tiny", **dict(kw, seconds=0.2), max_bytes=1)
@@ -279,14 +279,16 @@ class MediaTests(DatabaseTest):
         q = dict(question(), question="Which filmmaker is identified by this audio clip?", type="sound", media_id=mid)
         with self.db:
             store.save_candidate(self.db, fid, q, "writer")
-            store.apply_review(self.db, fid, approval(), "reviewer")
+            store.apply_review(self.db, fid, approval(), "reviewer", media_dir=Path(self.temp.name) / "assets")
         self.assertEqual(self.db.execute("SELECT type FROM questions").fetchone()[0], "sound")
+        self.assertEqual(self.db.execute("SELECT id FROM questions").fetchone()[0], mid)
         from triviadb.__main__ import export_db
         destination = Path(self.temp.name) / "game.sqlite"
-        export_db(self.db, destination)
+        export_db(self.db, destination, media_dir=Path(self.temp.name) / "assets")
         with closing(sqlite3.connect(destination)) as game:
             asset_path = game.execute("SELECT path FROM media").fetchone()[0]
-            self.assertTrue((destination.parent / asset_path).is_file())
+            self.assertEqual(asset_path, mid + ".wav")
+            self.assertTrue((destination.parent / "game.media" / asset_path).is_file())
         with self.assertRaises(ValueError):
             attach(self.db, fid, mid)
 
