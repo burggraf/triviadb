@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.lock
+*.part
+__pycache__/
+*.py[cod]
+.venv/
+.pi/
+*.egg-info/
+build/
+dist/
