@@ -121,6 +121,25 @@ class PipelineTests(DatabaseTest):
                 store.add_fact(self.db, dict(fact(subject=f"Q{i+1000}", answer=f"Q{i+2000}", label=f"Valid {i}"), pool="enough", popularity=5))
         self.assertEqual(len(select_batch(self.db, 1, set(), category="Movies")), 1)
 
+    def test_default_selection_skips_specialist_formats_and_duplicate_subjects(self):
+        from triviadb.pipeline import select_batch
+        safe = [
+            fact(subject="safe:1", answer="Director One", label="Director One", fixed_options=["Director One", "Director Two", "Director Three", "Director Four"]),
+            dict(fact(subject="safe:1", answer="Director Five", label="Director Five", fixed_options=["Director Five", "Director Six", "Director Seven", "Director Eight"]), qualifiers={"version": 2}),
+            fact(subject="safe:2", answer="Director Nine", label="Director Nine", fixed_options=["Director Nine", "Director Ten", "Director Eleven", "Director Twelve"]),
+        ]
+        specialist = dict(fact(subject="element:tin", answer="50", label="50",
+                                fixed_options=["50", "47", "92", "94"]),
+                          category="Science & Technology", subcategory="The Periodic Table",
+                          pool="element-number", object_id="atomic-number:50")
+        with self.db:
+            for item in [*safe, specialist]:
+                store.add_fact(self.db, item)
+        selected = select_batch(self.db, 10, set(), category=None)
+        selected_facts = [item[0] for item in selected]
+        self.assertEqual({item["subject_id"] for item in selected_facts}, {"safe:1", "safe:2"})
+        self.assertNotIn("element-number", {item["pool"] for item in selected_facts})
+
     def test_drafts_resume_without_rewriting_and_failed_review_does_not_publish(self):
         from triviadb.pipeline import generate
         seen = []
@@ -145,6 +164,34 @@ class PipelineTests(DatabaseTest):
 
 
 class CLITests(DatabaseTest):
+    def test_sample_excludes_specialist_relationships_and_caps_repetition(self):
+        from collections import Counter
+        from triviadb.__main__ import sample_rows
+        from test_triviadb import question, approval
+        items = []
+        for serial in range(3):
+            items.append(("film-director", "Movies", "Movie Directors", serial))
+        items.extend((("album-artist", "Music", "Albums & Artists", 10),
+                      ("dish-origin", "Food & Drink", "Food Origins", 11),
+                      ("element-number", "Science & Technology", "The Periodic Table", 12)))
+        with self.db:
+            for pool, category, subcategory, serial in items:
+                answer = f"Answer {serial}"
+                f = dict(fact(subject=f"sample:{serial}", answer=answer, label=answer,
+                              fixed_options=[answer, f"Wrong {serial}a", f"Wrong {serial}b", f"Wrong {serial}c"]),
+                         category=category, subcategory=subcategory, pool=pool, object_id=f"object:{serial}")
+                fid = store.add_fact(self.db, f)
+                q = dict(question(), category=category, subcategory=subcategory,
+                         question=f"Which answer belongs to fixture item {serial}?", a=answer,
+                         b=f"Wrong {serial}a", c=f"Wrong {serial}b", d=f"Wrong {serial}c", difficulty=3)
+                store.save_candidate(self.db, fid, q, "writer")
+                store.apply_review(self.db, fid, dict(approval(), difficulty=3), "reviewer")
+        rows = sample_rows(self.db, limit=10, seed=42)
+        pools = Counter(self.db.execute("SELECT f.pool FROM facts f JOIN question_meta m ON m.fact_id=f.id WHERE m.question_id=?",
+                                        (row["id"],)).fetchone()[0] for row in rows)
+        self.assertNotIn("element-number", pools)
+        self.assertLessEqual(pools["film-director"], 2)
+
     def test_samples_are_seeded_category_balanced_and_use_party_difficulty_mix(self):
         from collections import Counter
         from triviadb.__main__ import sample_rows
@@ -160,11 +207,11 @@ class CLITests(DatabaseTest):
                         q = dict(question(), category=cat, question=f"Who created fixture item {serial}?", difficulty=difficulty)
                         store.save_candidate(self.db, fid, q, "writer")
                         store.apply_review(self.db, fid, dict(approval(), difficulty=difficulty), "reviewer")
-        rows = sample_rows(self.db, limit=30, seed=42)
+        rows = sample_rows(self.db, limit=30, seed=42, include_specialist=True)
         self.assertEqual(rows, sample_rows(self.db, limit=30, seed=42))
         self.assertNotEqual(rows, sample_rows(self.db, limit=30, seed=99))
         self.assertEqual(Counter(q["category"] for q in rows), {"Movies": 10, "Music": 10, "Geography": 10})
-        self.assertEqual(Counter(q["difficulty"] for q in rows), {2: 15, 5: 12, 8: 3})
+        self.assertEqual(Counter(q["difficulty"] for q in rows), {2: 18, 5: 9, 8: 3})
         self.assertEqual(len({q["id"] for q in rows}), 30)
         self.assertTrue(all(q["difficulty"] <= 3 for q in sample_rows(self.db, limit=30, seed=42, max_difficulty=3)))
 

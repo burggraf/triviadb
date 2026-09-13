@@ -37,7 +37,7 @@ python3 -m triviadb --db /path/to/trivia.sqlite --media-dir /path/to/assets stat
 
 | Implemented source | Access | What becomes trivia | License |
 |---|---|---|---|
-| [Wikidata](https://www.wikidata.org/wiki/Wikidata:Licensing) | Cached entity API + bounded SPARQL discovery; local dump importer | Film directors/scores, books, albums, TV creators, art, elements, games, landmarks, and other catalog recipes | Structured data: CC0 |
+| [Wikidata](https://www.wikidata.org/wiki/Wikidata:Licensing) | Cached entity API + bounded SPARQL discovery; local dump importer | Film directors/scores, books, albums, TV creators, country capitals, art, elements, games, landmarks, and other catalog recipes | Structured data: CC0 |
 | [The Met](https://github.com/metmuseum/openaccess) | Official CSV download, roughly 330 MB; optional object/image API | Highlighted paintings, sculpture, drawings and prints with confident single-artist attribution | Dataset: CC0; images checked separately |
 | [Natural Earth](https://www.naturalearthdata.com/about/terms-of-use/) | Official populated-places GeoJSON download | Northernmost-of-four city comparisons, calculated from coordinates | Public domain |
 
@@ -108,15 +108,16 @@ python3 -m triviadb set-difficulty QUESTION_UUID 7 --reason "Requires specialist
 python3 -m triviadb reject QUESTION_UUID --reason "Too obscure for our audience"
 ```
 
-`sample` shuffles reproducibly, balances available categories, and targets **50% easy (1–3), 40% medium (4–6), 10% hard (7–9)**. If coverage is insufficient it uses available questions; it does not invent questions or silently change their difficulty. Supply the printed seed to repeat a sample. The output includes correct answers for editorial inspection, not blind gameplay.
+`sample` shuffles reproducibly, balances available categories and relationship formats, avoids repeated subjects, and targets **60% easy (1–3), 30% medium (4–6), 10% hard (7–9)**. Specialist relationships are excluded by default; use `--include-specialist` only for an explicit audit. If coverage is insufficient it returns the available questions rather than padding with repetition, inventing questions, or silently changing their difficulty. Supply the printed seed to repeat a sample. The output includes correct answers for editorial inspection, not blind gameplay.
 
-Generation itself interleaves categories, prioritizes prominent subjects, and breaks ties using hashed fact IDs—not alphabetical question titles. Wikidata pagination is by entity ID, not title. After partial imports, unvisited/least-recently-visited recipes run first so repeated quota stops cannot continually favor the front of the recipe list. Early small imports can still be unrepresentative: import multiple recipes/pages and inspect `stats` before evaluating corpus coverage. Met and Natural Earth are sampled from their downloaded datasets, not only the first alphabetical records.
+Generation itself interleaves categories, prioritizes prominent subjects, and breaks ties using hashed fact IDs—not alphabetical question titles. The default queue also skips narrow specialist relationships (periodic-table values, city-latitude comparisons, building/bridge credits, film-composer/screenwriter credits, game-developer divisions, spacecraft manufacturers, and catalog drawings/prints). Those facts remain importable behind `--include-specialist`, but are not allowed to define the ordinary pub set. A default batch avoids duplicate subjects and limits one relationship format to two candidates. Wikidata pagination is by entity ID, not title. After partial imports, unvisited/least-recently-visited recipes run first so repeated quota stops cannot continually favor the front of the recipe list. Early small imports can still be unrepresentative: import multiple recipes/pages and inspect `stats` before evaluating corpus coverage. Met and Natural Earth are sampled from their downloaded datasets, not only the first alphabetical records.
 
-The database need not contain the same difficulty mix as a playable party set. Preserve good harder questions, but select an accessible mix for games. `set-difficulty` preserves the original model review alongside the manual estimate. Actual player correct-answer rates are the next calibration step; this version does **not** collect player responses. No empirical quality claims are made from the model's difficulty score.
+The database need not contain the same difficulty mix as a playable party set. Preserve good harder questions, but select an accessible 60/30/10 mix for games. `set-difficulty` preserves the original model review alongside the manual estimate. Actual player correct-answer rates are the next calibration step; this version does **not** collect player responses. No empirical quality claims are made from the model's difficulty score.
 
 Tuning knobs already available:
 - `--min-sitelinks` and `--recipes`: source prominence and topic coverage.
 - `--category`, `--type`, `--limit`, `--batch-size`: bounded targeted generation/review.
+- `--include-specialist`: explicitly include narrow relationship pools for source/editorial audits.
 - `sample --min-difficulty/--max-difficulty`: party-set selection.
 - `EDITOR` and `REVIEWER` in `triviadb/pipeline.py`: editorial standards.
 - `RECIPES` in `triviadb/catalog.py`: defined relationships and reusable subcategories.
@@ -251,7 +252,7 @@ Game integration:
 
 ## Bounded development pilot
 
-The saved pilot contains **717 deduplicated source facts** and **16 retained questions across nine categories** (15 text, one photo), from 30 attempted candidates. Fourteen were rejected by the model or subsequent editorial inspection. The retained difficulty estimates are nine easy, five medium, and two hard; two initial model estimates were manually raised. This is a small quality probe, **not** a claim of a finished large corpus or player-tested calibration.
+The initial saved pilot contained **717 deduplicated source facts** and **16 retained questions across nine categories** (15 text, one photo), from 30 attempted candidates. Fourteen were rejected by the model or subsequent editorial inspection. It was a development probe, **not** a claim of a finished large corpus or player-tested calibration. A later 100-question quality pilot exposed severe difficulty and repetition problems; that batch was withdrawn from the approved play set while its facts, prompts, reviews, and rejection evidence were retained. Default generation and sampling now exclude narrow specialist relationships and suppress repeated formats, but new questions still require human sampling before publication.
 
 - Preview: `data/pilot.json` (seed 42).
 - Approved-only export: `data/party.sqlite` plus `data/party.media/`.

@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import media, sources
-from .catalog import CATEGORIES, RECIPES
+from .catalog import CATEGORIES, RECIPES, default_fact_eligible
 from .gemini import Gemini, Paused, load_config
 from .net import CachedHTTP, HTTPFailure
 from .pipeline import REVIEW_MODEL, WRITER_MODEL, generate, review_pending
@@ -69,6 +69,7 @@ def parser():
         gen.add_argument("--reviewer-model")
         gen.add_argument("--category", choices=CATEGORIES)
         gen.add_argument("--type", choices=("text", "photo", "sound"))
+        gen.add_argument("--include-specialist", action="store_true", help="Opt into narrow specialist fact relationships")
         if name == "generate":
             gen.add_argument("--draft-only", action="store_true", help="Never publish; save drafts for a later review command")
     sample = sub.add_parser("sample", help="Print approved questions as JSON")
@@ -78,6 +79,7 @@ def parser():
     sample.add_argument("--seed", type=int, help="Repeatable shuffled sample (otherwise a new random seed)")
     sample.add_argument("--min-difficulty", type=positive, default=1)
     sample.add_argument("--max-difficulty", type=positive, default=9)
+    sample.add_argument("--include-specialist", action="store_true", help="Opt into narrow specialist fact relationships")
     inspect = sub.add_parser("inspect", help="Inspect a fact or question ID, including evidence/review")
     inspect.add_argument("id")
     reject = sub.add_parser("reject", help="Manually unpublish/reject a candidate; retain its fact and audit trail")
@@ -209,31 +211,66 @@ def reject_question(db, identity, reason):
     print(f"Rejected candidate {fid}: {reason}")
 
 
-def sample_rows(db, limit=30, seed=1, category=None, question_type=None, min_difficulty=1, max_difficulty=9):
+def sample_rows(db, limit=30, seed=1, category=None, question_type=None, min_difficulty=1, max_difficulty=9,
+                include_specialist=False):
     if not 1 <= min_difficulty <= max_difficulty <= 9:
         raise ValueError("Difficulty bounds must satisfy 1 <= min <= max <= 9")
     db.create_function("sample_order", 1, lambda qid: digest([seed, qid]), deterministic=True)
-    rows = db.execute("""SELECT * FROM (
-        SELECT q.*,(difficulty-1)/3 AS band,
-            row_number() OVER (PARTITION BY category,(difficulty-1)/3 ORDER BY sample_order(id)) AS sample_rank
-        FROM questions q WHERE (? IS NULL OR category=?) AND (? IS NULL OR type=?) AND difficulty BETWEEN ? AND ?
-        ) WHERE sample_rank<=? ORDER BY sample_rank""",
-                      (category, category, question_type, question_type, min_difficulty, max_difficulty, limit))
+    rows = db.execute("""SELECT q.*, f.pool AS fact_pool, f.subject_id AS fact_subject_id,
+            CASE WHEN EXISTS(SELECT 1 FROM provenance p WHERE p.fact_id=f.id AND p.source='met') THEN 'met' ELSE '' END AS fact_source,
+            f.popularity AS fact_popularity, EXISTS(SELECT 1 FROM fact_media WHERE fact_id=f.id) AS has_media,
+            (q.difficulty-1)/3 AS band
+        FROM questions q JOIN question_meta qm ON qm.question_id=q.id JOIN facts f ON f.id=qm.fact_id
+        WHERE (? IS NULL OR q.category=?) AND (? IS NULL OR q.type=?)
+          AND q.difficulty BETWEEN ? AND ?
+        ORDER BY q.category,(q.difficulty-1)/3,sample_order(q.id)""",
+                      (category, category, question_type, question_type, min_difficulty, max_difficulty)).fetchall()
     queues, counts, selected = defaultdict(deque), Counter(), []
+    eligible_pools = set()
     for row in rows:
         item = dict(row)
+        fact = {"pool": item["fact_pool"], "source": item["fact_source"], "popularity": item["fact_popularity"]}
+        if not default_fact_eligible(fact, has_media=bool(item["has_media"]), question_type=question_type,
+                                     include_specialist=include_specialist):
+            continue
+        eligible_pools.add(item["fact_pool"])
         band = item.pop("band")
-        item.pop("sample_rank")
-        queues[band, item["category"]].append(item)
-    pattern = [0, 1, 0, 1, 0, 1, 0, 1, 0, 2]  # 50% easy / 40% medium / 10% hard, when available.
+        item.pop("fact_pool")
+        item.pop("fact_subject_id")
+        item.pop("fact_source")
+        item.pop("fact_popularity")
+        item.pop("has_media")
+        queues[band, item["category"]].append((fact["pool"], row["fact_subject_id"], item))
+    pool_cap_limit = max(2, (limit + 7) // 8) if len(eligible_pools) > 1 else limit
+    pool_cap = 2 if len(eligible_pools) > 1 else limit
+    used_pools, used_subjects = Counter(), set()
+    pattern = [0, 1, 0, 1, 0, 1, 0, 0, 0, 2]  # 60% easy / 30% medium / 10% hard, when available.
     while len(selected) < limit:
         available = [key for key, queue in queues.items() if queue]
         if not available:
             break
         desired = pattern[len(selected) % len(pattern)]
-        band, cat = min(available, key=lambda key: (abs(key[0] - desired), counts[key[1]], digest([seed, key[1]])))
-        selected.append(queues[band, cat].popleft())
-        counts[cat] += 1
+        made = False
+        ordered = sorted(available, key=lambda key: (abs(key[0] - desired), counts[key[1]], digest([seed, key[1]])))
+        for key in ordered:
+            queue = queues[key]
+            while queue:
+                pool, subject_id, item = queue.popleft()
+                if used_pools[pool] >= pool_cap or subject_id in used_subjects:
+                    continue
+                selected.append(item)
+                counts[item["category"]] += 1
+                used_pools[pool] += 1
+                used_subjects.add(subject_id)
+                made = True
+                break
+            if made:
+                break
+        if not made:
+            if pool_cap < pool_cap_limit:
+                pool_cap += 1
+                continue
+            break
     return selected
 
 
@@ -246,7 +283,7 @@ def stats(db, args):
         result["by_" + column] = dict(db.execute(f"SELECT {column},count(*) FROM questions GROUP BY {column}"))
     result["difficulty_bands"] = dict(db.execute("""SELECT CASE WHEN difficulty<=3 THEN 'easy (1-3)'
         WHEN difficulty<=6 THEN 'medium (4-6)' ELSE 'hard (7-9)' END,count(*) FROM questions GROUP BY 1"""))
-    result["difficulty_note"] = "Editorial estimates, not player-calibrated. Balanced samples target 50/40/10 when coverage allows."
+    result["difficulty_note"] = "Editorial estimates, not player-calibrated. Balanced samples target 60/30/10 easy/medium/hard when coverage allows."
     result["source_facts"] = dict(db.execute("SELECT source,count(DISTINCT fact_id) FROM provenance GROUP BY source"))
     result["media"] = dict(db.execute("SELECT count(*) AS files,coalesce(sum(bytes),0) AS bytes FROM media").fetchone())
     result["source_cache_bytes"] = sum(path.stat().st_size for path in Path(args.cache).rglob("*") if path.is_file())
@@ -297,16 +334,19 @@ def execute(db, args):
         writer = args.writer_model or config.get("GEMINI_WRITER_MODEL", WRITER_MODEL)
         reviewer = args.reviewer_model or config.get("GEMINI_REVIEWER_MODEL", REVIEW_MODEL)
         if args.command == "generate":
-            generate(db, client, args.limit, args.batch_size, writer, reviewer, args.draft_only, args.category, args.type, args.media_dir)
+            generate(db, client, args.limit, args.batch_size, writer, reviewer, args.draft_only, args.category, args.type,
+                     args.media_dir, args.include_specialist)
         else:
-            review_pending(db, client, args.limit, args.batch_size, reviewer, args.category, args.type, args.media_dir)
+            review_pending(db, client, args.limit, args.batch_size, reviewer, args.category, args.type, args.media_dir,
+                           args.include_specialist)
         print(f"API attempts this run: {client.calls}; approved total: {db.execute('SELECT count(*) FROM questions').fetchone()[0]}")
     elif args.command == "stats":
         stats(db, args)
     elif args.command == "sample":
         seed = args.seed if args.seed is not None else secrets.randbits(32)
-        print(f"Sample seed: {seed}; category-balanced, target easy/medium/hard 50/40/10 where available.", file=sys.stderr)
-        print_json(sample_rows(db, args.limit, seed, args.category, args.type, args.min_difficulty, args.max_difficulty))
+        print(f"Sample seed: {seed}; category-balanced, varied by source relationship, target easy/medium/hard 60/30/10 where available.", file=sys.stderr)
+        print_json(sample_rows(db, args.limit, seed, args.category, args.type, args.min_difficulty, args.max_difficulty,
+                               args.include_specialist))
     elif args.command == "inspect":
         row = db.execute("SELECT fact_id FROM question_meta WHERE question_id=?", (args.id,)).fetchone()
         fid = row[0] if row else args.id

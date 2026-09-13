@@ -15,7 +15,7 @@ from triviadb import store
 def fact(subject="wd:Q1", answer="wd:Q10", label="Director One", **extra):
     return dict(subject_id=subject, subject="A Famous Movie", predicate="P57",
                 object_id=answer, answer=label, category="Movies", subcategory="Movie Directors",
-                pool="film-director", popularity=50, qualifiers={}, context={"year": 1975},
+                pool="film-director", popularity=70, qualifiers={}, context={"year": 1975},
                 source="wikidata", source_record_id=subject, source_url="https://www.wikidata.org/wiki/Q1",
                 license="CC0-1.0", snapshot="test.json", **extra)
 
@@ -218,6 +218,11 @@ class SourceTests(DatabaseTest):
         from triviadb.sources import matching_recipes
         entity = {"claims": {"P31": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": "Q7725634"}}}}]}}
         self.assertIn("book-author", matching_recipes(entity))
+
+    def test_country_capital_recipe_uses_country_class(self):
+        from triviadb.sources import matching_recipes
+        entity = {"claims": {"P31": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": "Q6256"}}}}]}}
+        self.assertIn("country-capital", matching_recipes(entity))
 
     def test_local_dump_resume_and_label_pass(self):
         from triviadb.sources import import_dump
