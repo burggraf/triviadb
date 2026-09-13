@@ -3,7 +3,7 @@
 import json
 from collections import Counter
 
-from .catalog import CATEGORIES, RELATIONSHIPS, default_fact_eligible
+from .catalog import CATEGORIES, RELATIONSHIPS, SPECIALIST_POOLS, default_fact_eligible
 from .sources import choose_options
 from .store import REVIEW_CHECKS, apply_review, dumps, media_path, save_candidate, unpack
 
@@ -82,9 +82,28 @@ def packet(fact, options, media):
                 context=fact["context"], qualifiers=fact["qualifiers"], type=media["kind"] if media else "text")
 
 
+def pool_budget(db, include_specialist=False):
+    counts = Counter(dict(db.execute("""SELECT f.pool,count(*) FROM candidates c JOIN facts f ON f.id=c.fact_id
+        WHERE c.status IN ('draft','accepted') GROUP BY f.pool""")))
+    active = set(counts)
+    active.update(row[0] for row in db.execute("""SELECT DISTINCT f.pool FROM facts f
+        WHERE f.status='ready' AND NOT EXISTS(SELECT 1 FROM candidates c WHERE c.fact_id=f.id)"""))
+    if not include_specialist:
+        active.difference_update(SPECIALIST_POOLS)
+    if len(active) <= 1:
+        return counts, None
+    for pool in active:
+        counts.setdefault(pool, 0)
+    total = sum(counts[pool] for pool in active)
+    # A small bank should cover each available relationship before it repeats;
+    # the same rule naturally relaxes as the bank grows.
+    return counts, (total + len(active) - 1) // len(active) + 2
+
+
 def select_batch(db, size, seen, category=None, question_type=None, media_dir="data/media",
                 seen_subjects=None, include_specialist=False):
     counts = dict(db.execute("SELECT f.category,count(*) FROM candidates c JOIN facts f ON f.id=c.fact_id GROUP BY f.category"))
+    bank_pool_counts, bank_pool_limit = pool_budget(db, include_specialist)
     categories = [category] if category else sorted(CATEGORIES, key=lambda cat: (counts.get(cat, 0), cat))
     seen_subjects = seen_subjects if seen_subjects is not None else set()
 
@@ -115,6 +134,9 @@ def select_batch(db, size, seen, category=None, question_type=None, media_dir="d
                                              include_specialist=include_specialist):
                     continue
                 if fact["subject_id"] in seen_subjects or pool_counts[fact["pool"]] >= 2:
+                    continue
+                if (not include_specialist and bank_pool_limit is not None
+                        and bank_pool_counts[fact["pool"]] >= bank_pool_limit):
                     continue
                 seen.add(row["id"])
                 options = choose_options(db, fact)

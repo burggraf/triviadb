@@ -121,6 +121,36 @@ class PipelineTests(DatabaseTest):
                 store.add_fact(self.db, dict(fact(subject=f"Q{i+1000}", answer=f"Q{i+2000}", label=f"Valid {i}"), pool="enough", popularity=5))
         self.assertEqual(len(select_batch(self.db, 1, set(), category="Movies")), 1)
 
+    def test_generation_prefers_underrepresented_relationships(self):
+        from triviadb.pipeline import select_batch
+        from test_triviadb import approval, question
+        with self.db:
+            for serial in range(13):
+                answer = f"Capital {serial}"
+                f = dict(fact(subject=f"country:{serial}", answer=answer, label=answer,
+                              fixed_options=[answer, f"Capital Wrong {serial}a", f"Capital Wrong {serial}b", f"Capital Wrong {serial}c"]),
+                         category="Geography", subcategory="Countries & Capitals", pool="country-capital",
+                         object_id=f"capital:{serial}", popularity=100)
+                fid = store.add_fact(self.db, f)
+                q = dict(question(), category="Geography", subcategory="Countries & Capitals",
+                         question=f"What is the capital of country fixture {serial}?", a=answer,
+                         b=f"Capital Wrong {serial}a", c=f"Capital Wrong {serial}b", d=f"Capital Wrong {serial}c")
+                store.save_candidate(self.db, fid, q, "writer")
+                store.apply_review(self.db, fid, approval(), "reviewer")
+            available = dict(fact(subject="song:available", answer="Performer", label="Performer",
+                                   fixed_options=["Performer", "Other One", "Other Two", "Other Three"]),
+                             category="Geography", subcategory="Songs & Performers", pool="song-performer",
+                             popularity=90)
+            store.add_fact(self.db, available)
+            overrepresented = dict(fact(subject="country:available", answer="Another Capital", label="Another Capital",
+                                        fixed_options=["Another Capital", "Other Capital A", "Other Capital B", "Other Capital C"]),
+                                  category="Geography", subcategory="Countries & Capitals", pool="country-capital",
+                                  popularity=100)
+            store.add_fact(self.db, overrepresented)
+        selected = select_batch(self.db, 1, set())
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0][0]["pool"], "song-performer")
+
     def test_default_selection_skips_specialist_formats_and_duplicate_subjects(self):
         from triviadb.pipeline import select_batch
         safe = [
@@ -213,7 +243,7 @@ class CLITests(DatabaseTest):
         pools = Counter(self.db.execute("SELECT f.pool FROM facts f JOIN question_meta m ON m.fact_id=f.id WHERE m.question_id=?",
                                         (row["id"],)).fetchone()[0] for row in rows)
         self.assertNotIn("element-number", pools)
-        self.assertLessEqual(pools["film-director"], 2)
+        self.assertLessEqual(pools["film-director"], 3)
 
     def test_samples_are_seeded_category_balanced_and_use_party_difficulty_mix(self):
         from collections import Counter

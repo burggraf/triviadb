@@ -241,7 +241,8 @@ def sample_rows(db, limit=30, seed=1, category=None, question_type=None, min_dif
         item.pop("fact_popularity")
         item.pop("has_media")
         queues[band, item["category"]].append((fact["pool"], row["fact_subject_id"], item))
-    pool_cap_limit = max(2, (limit + 7) // 8) if len(eligible_pools) > 1 else limit
+    pool_cap_limit = (max(2, (limit + len(eligible_pools) - 1) // len(eligible_pools) + 1)
+                      if len(eligible_pools) > 1 else limit)
     pool_cap = 2 if len(eligible_pools) > 1 else limit
     used_pools, used_subjects = Counter(), set()
     pattern = [0, 1, 0, 1, 0, 1, 0, 0, 0, 2]  # 60% easy / 30% medium / 10% hard, when available.
