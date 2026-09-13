@@ -164,6 +164,29 @@ class PipelineTests(DatabaseTest):
 
 
 class CLITests(DatabaseTest):
+    def test_sample_expands_format_cap_without_discarding_questions(self):
+        from collections import Counter
+        from triviadb.__main__ import sample_rows
+        from test_triviadb import question, approval
+        with self.db:
+            for pool_number in range(4):
+                for serial in range(3):
+                    number = pool_number * 10 + serial
+                    answer = f"Answer {number}"
+                    f = dict(fact(subject=f"format:{number}", answer=answer, label=answer,
+                                  fixed_options=[answer, f"Wrong {number}a", f"Wrong {number}b", f"Wrong {number}c"]),
+                             pool=f"format-{pool_number}", object_id=f"format-object:{number}")
+                    fid = store.add_fact(self.db, f)
+                    q = dict(question(), question=f"Which answer belongs to format fixture {number}?", a=answer,
+                             b=f"Wrong {number}a", c=f"Wrong {number}b", d=f"Wrong {number}c")
+                    store.save_candidate(self.db, fid, q, "writer")
+                    store.apply_review(self.db, fid, dict(approval(), difficulty=3), "reviewer")
+        rows = sample_rows(self.db, limit=20, seed=7)
+        pools = Counter(self.db.execute("SELECT f.pool FROM facts f JOIN question_meta m ON m.fact_id=f.id WHERE m.question_id=?",
+                                        (row["id"],)).fetchone()[0] for row in rows)
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(set(pools.values()), {3})
+
     def test_sample_excludes_specialist_relationships_and_caps_repetition(self):
         from collections import Counter
         from triviadb.__main__ import sample_rows

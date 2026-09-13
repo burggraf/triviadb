@@ -224,6 +224,14 @@ class SourceTests(DatabaseTest):
         entity = {"claims": {"P31": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": "Q6256"}}}}]}}
         self.assertIn("country-capital", matching_recipes(entity))
 
+    def test_broad_country_and_song_recipes_are_cataloged(self):
+        from triviadb.sources import matching_recipes
+        country = {"claims": {"P31": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": "Q6256"}}}}]}}
+        song = {"claims": {"P31": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": "Q7366"}}}}]}}
+        self.assertIn("country-currency", matching_recipes(country))
+        self.assertIn("country-continent", matching_recipes(country))
+        self.assertIn("song-performer", matching_recipes(song))
+
     def test_local_dump_resume_and_label_pass(self):
         from triviadb.sources import import_dump
         path = Path(self.temp.name) / "tiny.json"

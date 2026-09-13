@@ -14,6 +14,7 @@ RECIPES = {
     "tv-creator": ("Q5398426", "P170", "Television", "TV Creators", "creator of the television series"),
     "album-artist": ("Q482994", "P175", "Music", "Albums & Artists", "performer of the album"),
     "song-composer": ("Q7366", "P86", "Music", "Songwriters", "composer of the song"),
+    "song-performer": ("Q7366", "P175", "Music", "Songs & Performers", "performer of the song"),
     "book-author": ("Q7725634", "P50", "Books & Language", "Books & Authors", "author of the literary work"),
     "play-author": ("Q25379", "P50", "Books & Language", "Plays & Playwrights", "author of the play"),
     "painting-artist": ("Q3305213", "P170", "Arts & Culture", "Paintings & Artists", "creator of the painting"),
@@ -21,6 +22,8 @@ RECIPES = {
     "building-architect": ("Q41176", "P84", "History", "Landmarks & Architecture", "architect of the building"),
     "bridge-designer": ("Q12280", "P84", "Geography", "Bridges & Landmarks", "architect of the bridge"),
     "country-capital": ("Q6256", "P36", "Geography", "Countries & Capitals", "capital of the country"),
+    "country-currency": ("Q6256", "P38", "Geography", "Countries & Currencies", "currency used by the country"),
+    "country-continent": ("Q6256", "P30", "Geography", "Countries & Continents", "continent containing the country"),
     "game-developer": ("Q7889", "P178", "Sports & Games", "Video Games", "developer of the video game"),
     "boardgame-designer": ("Q131436", "P287", "Sports & Games", "Board Games", "designer of the board game"),
     "element-number": ("Q11344", "P1086", "Science & Technology", "The Periodic Table", "atomic number of the element"),
@@ -55,6 +58,9 @@ DEFAULT_MIN_POPULARITY = {
     "song-composer": 30,
     "tv-creator": 35,
     "country-capital": 100,
+    "country-currency": 100,
+    "country-continent": 100,
+    "song-performer": 30,
 }
 
 

@@ -254,9 +254,10 @@ def sample_rows(db, limit=30, seed=1, category=None, question_type=None, min_dif
         ordered = sorted(available, key=lambda key: (abs(key[0] - desired), counts[key[1]], digest([seed, key[1]])))
         for key in ordered:
             queue = queues[key]
-            while queue:
+            for _ in range(len(queue)):
                 pool, subject_id, item = queue.popleft()
                 if used_pools[pool] >= pool_cap or subject_id in used_subjects:
+                    queue.append((pool, subject_id, item))
                     continue
                 selected.append(item)
                 counts[item["category"]] += 1
