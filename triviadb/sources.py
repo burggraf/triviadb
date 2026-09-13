@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlencode
 
-from .catalog import RECIPES
+from .catalog import DISCOVERY_CLASS_PATHS, RECIPES, RECIPE_CLASS_PROPERTIES
 from .store import add_fact, checkpoint, digest, dumps, entity_id, normalize, unpack
 
 MET_CSV = "https://media.githubusercontent.com/media/metmuseum/openaccess/master/MetObjects.csv"
@@ -45,8 +45,13 @@ def reference_ids(entity):
 
 
 def matching_recipes(entity):
-    classes = {(claim_value(c) or {}).get("value", {}).get("id") for c in claims(entity, "P31")}
-    return [key for key, row in RECIPES.items() if row[0] in classes]
+    matches = []
+    for key, row in RECIPES.items():
+        prop = RECIPE_CLASS_PROPERTIES.get(key, "P31")
+        classes = {(claim_value(c) or {}).get("value", {}).get("id") for c in claims(entity, prop)}
+        if row[0] in classes:
+            matches.append(key)
+    return matches
 
 
 def extract_wikidata(entity, recipe, labels, snapshot):
@@ -121,6 +126,7 @@ def import_wikidata(db, http, recipes, pages=1, page_size=50, min_sitelinks=25, 
                 found = ids
             else:
                 kind, prop = RECIPES[recipe][:2]
+                class_path = DISCOVERY_CLASS_PATHS.get(recipe, "wdt:P31")
                 after = state.get("after", "")
                 if after and not re.fullmatch(r"http://www\.wikidata\.org/entity/Q\d+", after):
                     raise ValueError("Invalid Wikidata checkpoint")
@@ -129,7 +135,7 @@ PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX wikibase: <http://wikiba.se/ontology#>
 PREFIX schema: <http://schema.org/>
 SELECT DISTINCT ?item WHERE {{
- ?item wdt:P31 wd:{kind}; wdt:{prop} ?answer; wikibase:sitelinks ?links.
+ ?item {class_path} wd:{kind}; wdt:{prop} ?answer; wikibase:sitelinks ?links.
  ?article schema:about ?item; schema:isPartOf <https://en.wikipedia.org/>.
  FILTER(?links >= {int(min_sitelinks)}) FILTER(STR(?item) > "{after}")
 }} ORDER BY ?item LIMIT {int(page_size)}'''
@@ -145,7 +151,10 @@ SELECT DISTINCT ?item WHERE {{
             count = 0
             with db:
                 for entity in subjects.values():
-                    if recipe not in matching_recipes(entity) or "enwiki" not in entity.get("sitelinks", {}):
+                    # Discovery queries establish subclass relationships. Explicit IDs
+                    # still need a direct class/occupation match; the extractor remains
+                    # fail-closed on claims and labels.
+                    if "enwiki" not in entity.get("sitelinks", {}) or (ids and recipe not in matching_recipes(entity)):
                         continue
                     data = extract_wikidata(entity, recipe, objects, dumps(snapshots + object_snapshots))
                     if data:

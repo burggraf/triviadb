@@ -6,7 +6,7 @@ CATEGORIES = (
 )
 
 # key: (Wikidata class, property, major category, reusable subcategory, relationship)
-# Exact classes keep discovery queries bounded; dump imports use the same catalog.
+# Recipes keep discovery queries bounded; dump imports use the same catalog.
 RECIPES = {
     "film-director": ("Q11424", "P57", "Movies", "Movie Directors", "director of the film"),
     "film-composer": ("Q11424", "P86", "Movies", "Film Scores", "composer of the film score"),
@@ -24,13 +24,33 @@ RECIPES = {
     "country-capital": ("Q6256", "P36", "Geography", "Countries & Capitals", "capital of the country"),
     "country-currency": ("Q6256", "P38", "Geography", "Countries & Currencies", "currency used by the country"),
     "country-continent": ("Q6256", "P30", "Geography", "Countries & Continents", "continent containing the country"),
+    "sports-club-sport": ("Q847017", "P641", "Sports & Games", "Sports Clubs", "sport played by the club"),
+    "athlete-sport": ("Q2066131", "P641", "Sports & Games", "Athletes & Sports", "sport associated with the athlete"),
     "game-developer": ("Q7889", "P178", "Sports & Games", "Video Games", "developer of the video game"),
     "boardgame-designer": ("Q131436", "P287", "Sports & Games", "Board Games", "designer of the board game"),
     "element-number": ("Q11344", "P1086", "Science & Technology", "The Periodic Table", "atomic number of the element"),
     "element-symbol": ("Q11344", "P246", "Science & Technology", "Chemical Symbols", "chemical symbol of the element"),
+    "scientist-field": ("Q901", "P101", "Science & Technology", "Scientists & Fields", "field of work of the scientist"),
     "mineral-system": ("Q7946", "P556", "Nature", "Minerals & Crystals", "crystal system of the mineral"),
     "dish-origin": ("Q746549", "P495", "Food & Drink", "Food Origins", "country of origin of the dish (reject disputed origins)"),
+    "invention-inventor": ("Q12579633", "P61", "History", "Inventions & Inventors", "inventor of the invention"),
+    "historical-figure-country": ("Q5774265", "P27", "History", "Historical Figures", "country of citizenship of the historical figure"),
+    "battle-location": ("Q178561", "P276", "History", "Battles & History", "location of the battle"),
+    "taxon-status": ("Q16521", "P141", "Nature", "Animals & Conservation", "IUCN conservation status of the species"),
+    "moon-parent": ("Q2537", "P397", "Space", "Moons & Planets", "planet or body orbited by the natural satellite"),
     "spacecraft-maker": ("Q40218", "P176", "Space", "Spacecraft & Missions", "manufacturer of the spacecraft"),
+}
+
+# These pools need a bounded Wikidata subclass/occupation path during discovery. Explicit IDs
+# remain supported too; extraction still requires one unqualified answer claim.
+SUBCLASS_RECIPES = frozenset({
+    "sports-club-sport", "invention-inventor", "historical-figure-country", "battle-location",
+    "taxon-status", "moon-parent", "athlete-sport", "scientist-field",
+})
+RECIPE_CLASS_PROPERTIES = {"athlete-sport": "P106", "scientist-field": "P106"}
+DISCOVERY_CLASS_PATHS = {
+    **{recipe: "wdt:P31/wdt:P279*" for recipe in SUBCLASS_RECIPES - set(RECIPE_CLASS_PROPERTIES)},
+    **{recipe: "wdt:P106/wdt:P279*" for recipe in RECIPE_CLASS_PROPERTIES},
 }
 
 RELATIONSHIPS = {key: row[4] for key, row in RECIPES.items()}
@@ -60,6 +80,14 @@ DEFAULT_MIN_POPULARITY = {
     "country-capital": 100,
     "country-currency": 100,
     "country-continent": 100,
+    "sports-club-sport": 100,
+    "athlete-sport": 80,
+    "invention-inventor": 100,
+    "historical-figure-country": 100,
+    "battle-location": 100,
+    "taxon-status": 100,
+    "moon-parent": 70,
+    "scientist-field": 100,
     "song-performer": 30,
 }
 

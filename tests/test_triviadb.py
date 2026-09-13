@@ -214,6 +214,15 @@ class SourceTests(DatabaseTest):
         self.assertIn("wd:Q7725634", unquote(http.json.call_args.args[0]))
         self.assertEqual(http.json.call_count, 1)
 
+    def test_subclass_recipe_uses_bounded_wikidata_path(self):
+        from triviadb import sources
+        from unittest.mock import Mock
+        from urllib.parse import unquote
+        http = Mock()
+        http.json.return_value = ({"results": {"bindings": []}}, "query.json")
+        sources.import_wikidata(self.db, http, ["moon-parent"], pages=1, page_size=25, min_sitelinks=79)
+        self.assertIn("wdt:P31/wdt:P279*", unquote(http.json.call_args.args[0]))
+
     def test_book_recipe_uses_current_wikidata_literary_work_class(self):
         from triviadb.sources import matching_recipes
         entity = {"claims": {"P31": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": "Q7725634"}}}}]}}
@@ -231,6 +240,16 @@ class SourceTests(DatabaseTest):
         self.assertIn("country-currency", matching_recipes(country))
         self.assertIn("country-continent", matching_recipes(country))
         self.assertIn("song-performer", matching_recipes(song))
+
+    def test_history_sports_nature_and_space_recipes_are_cataloged(self):
+        from triviadb.sources import matching_recipes
+        for qid, recipe in (("Q12579633", "invention-inventor"), ("Q5774265", "historical-figure-country"),
+                            ("Q178561", "battle-location"), ("Q847017", "sports-club-sport"), ("Q16521", "taxon-status"), ("Q2537", "moon-parent")):
+            entity = {"claims": {"P31": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": qid}}}}]}}
+            self.assertIn(recipe, matching_recipes(entity))
+        for recipe in ("athlete-sport", "scientist-field"):
+            entity = {"claims": {"P106": [{"mainsnak": {"snaktype": "value", "datavalue": {"type": "wikibase-entityid", "value": {"id": {"athlete-sport": "Q2066131", "scientist-field": "Q901"}[recipe]}}}}]}}
+            self.assertIn(recipe, matching_recipes(entity))
 
     def test_local_dump_resume_and_label_pass(self):
         from triviadb.sources import import_dump

@@ -37,13 +37,13 @@ python3 -m triviadb --db /path/to/trivia.sqlite --media-dir /path/to/assets stat
 
 | Implemented source | Access | What becomes trivia | License |
 |---|---|---|---|
-| [Wikidata](https://www.wikidata.org/wiki/Wikidata:Licensing) | Cached entity API + bounded SPARQL discovery; local dump importer | Film directors/scores, books, albums, TV creators, songs, country capitals/currencies/continents, art, elements, games, landmarks, and other catalog recipes | Structured data: CC0 |
+| [Wikidata](https://www.wikidata.org/wiki/Wikidata:Licensing) | Cached entity API + bounded SPARQL discovery; local dump importer | Film directors/scores, books, albums, TV creators, songs, country capitals/currencies/continents, inventions, historical figures, athletes/sports, animal conservation, moons/planets, art, elements, games, landmarks, and other catalog recipes | Structured data: CC0 |
 | [The Met](https://github.com/metmuseum/openaccess) | Official CSV download, roughly 330 MB; optional object/image API | Highlighted paintings, sculpture, drawings and prints with confident single-artist attribution | Dataset: CC0; images checked separately |
 | [Natural Earth](https://www.naturalearthdata.com/about/terms-of-use/) | Official populated-places GeoJSON download | Northernmost-of-four city comparisons, calculated from coordinates | Public domain |
 
 `python3 -m triviadb sources` lists the implemented recipes and their categories. Defined major categories: Movies, Television, Music, Books & Language, History, Geography, Science & Technology, Nature, Sports & Games, Arts & Culture, Food & Drink, and Space. Recipe subcategories are reusable topics, not individual people or works.
 
-**A source catalog is not a list of guaranteed available questions.** Some exact Wikidata classes are sparse, facts may be ambiguous, or a pool may lack three suitable answers. Those are skipped rather than filled with inventions. All twelve categories need not be represented in a small initial import.
+**A source catalog is not a list of guaranteed available questions.** Some Wikidata relationships are sparse, facts may be ambiguous, or a pool may lack three suitable answers. Those are skipped rather than filled with inventions. All twelve categories need not be represented in a small initial import.
 
 MusicBrainz, Smithsonian, GeoNames, and other adapters are **not implemented yet**. No Jeopardy clues, scraped quiz wording, Wikipedia prose, or noncommercial/share-alike question banks are imported. The software's license checks are not legal advice or a guarantee of rights in manually supplied assets.
 
@@ -65,7 +65,7 @@ python3 -m triviadb import wikidata --recipes book-author --ids Q208460,Q25338
 python3 -m triviadb import met --file /path/to/MetObjects.csv
 ```
 
-Discovery is deliberately polite and bounded. Do **not** use thousands of pages to mine Wikidata's public query service. For large-scale extraction, use an appropriately sized local subset or the [official JSON dumps](https://www.wikidata.org/wiki/Wikidata:Database_download):
+Discovery is deliberately polite and bounded; several broad recipes use a single Wikidata subclass/occupation path to reach common entities without treating the entire ontology as pub-worthy. Do **not** use thousands of pages to mine Wikidata's public query service. For large-scale extraction, use an appropriately sized local subset or the [official JSON dumps](https://www.wikidata.org/wiki/Wikidata:Database_download):
 
 ```sh
 python3 -m triviadb import wikidata-dump /path/to/entities.json.gz --max-records 1000000
